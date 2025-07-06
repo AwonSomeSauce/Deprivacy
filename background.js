@@ -5,7 +5,7 @@ class BackgroundManager {
 
   init() {
     this.setupEventListeners();
-    this.initializeDefaultSettings();
+    this.setDefaultSettings();
   }
 
   setupEventListeners() {

@@ -3,7 +3,7 @@
   "name": "Privacy Guard",
   "version": "1.0",
   "description": "Automatically detects and protects sensitive tokens with differential privacy",
-  "permissions": ["activeTab", "storage"],
+  "permissions": ["activeTab", "storage", "notifications"],
   "content_scripts": [
     {
       "matches": ["<all_urls>"],
