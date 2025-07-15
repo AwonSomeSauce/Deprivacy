@@ -1,104 +1,29 @@
 class PrivacyGuard {
   constructor() {
-    this.sensitivePatterns = [
-      /\b\d{4}[-\s]?\d{4}[-\s]?\d{4}[-\s]?\d{4}\b/g, // Credit card
-      /\b\d{3}-\d{2}-\d{4}\b/g, // SSN
-      /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b/g, // Email
-      /\b\d{3}[-.]?\d{3}[-.]?\d{4}\b/g, // Phone number
-      /\b(?:sk|pk)_[a-zA-Z0-9]{24,}\b/g, // API keys
-      /\b[A-Za-z0-9]{32,}\b/g, // Tokens/hashes
-    ];
-
-    this.activeInput = null;
     this.overlay = null;
-    this.wordClusteringManager = null;
-    this.differentialPrivacyManager = null;
-    this.settings = {
-      protectionEnabled: true,
-      privacyLevel: 1.0,
-      autoReplace: false,
-    };
-    this.stats = {
-      detected: 0,
-      protected: 0,
-      replaced: 0,
-      censored: 0,
-    };
+    this.backendUrl = 'http://127.0.0.1:5000/detect-pii';
     this.init();
   }
 
-  async init() {
-    console.log("Privacy Guard: Initializing...");
+  init() {
+    console.log('PrivacyGuard: Initialized');
     this.setupEventListeners();
-    await this.loadSettings();
-    await this.initializeComponents();
-    this.setupMessageListener();
-    console.log("Privacy Guard: Initialization complete");
-  }
-
-  async loadSettings() {
-    try {
-      const result = await chrome.storage.sync.get(["privacyGuardSettings"]);
-      if (result.privacyGuardSettings) {
-        this.settings = { ...this.settings, ...result.privacyGuardSettings };
-      }
-    } catch (error) {
-      console.error("Error loading settings:", error);
-    }
-  }
-
-  async initializeComponents() {
-    // Initialize word clustering manager
-    this.wordClusteringManager = new WordClusteringManager();
-    await this.wordClusteringManager.initializeClusters();
-
-    // Initialize differential privacy manager
-    this.differentialPrivacyManager = new DifferentialPrivacyManager(
-      this.settings.privacyLevel,
-      0.001
-    );
-    this.differentialPrivacyManager.setWordClusteringManager(
-      this.wordClusteringManager
-    );
-  }
-
-  setupMessageListener() {
-    chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-      if (message.type === "SETTINGS_UPDATE") {
-        this.settings = { ...this.settings, ...message.settings };
-        this.differentialPrivacyManager.epsilon = this.settings.privacyLevel;
-      } else if (message.type === "RESET_PRIVACY_BUDGET") {
-        this.differentialPrivacyManager.resetPrivacyBudget(message.epsilon);
-      }
-      sendResponse({ success: true });
-    });
   }
 
   setupEventListeners() {
-    document.addEventListener("input", (e) => this.handleInput(e));
-    document.addEventListener("keyup", (e) => this.handleKeyUp(e));
-    document.addEventListener("click", (e) => this.handleClick(e));
-    document.addEventListener("paste", (e) => this.handlePaste(e));
-
-    // For Google Docs and other complex editors
-    document.addEventListener("DOMSubtreeModified", (e) =>
-      this.handleDOMChange(e)
+    ['input', 'paste'].forEach((evt) =>
+      document.addEventListener(evt, (e) => this.handleInput(e))
     );
+    document.addEventListener('click', (e) => this.handleClick(e));
+    document.addEventListener('keyup', (e) => this.handleKeyUp(e));
 
-    // MutationObserver for modern browsers
-    if (typeof MutationObserver !== "undefined") {
-      const observer = new MutationObserver((mutations) => {
-        mutations.forEach((mutation) => {
-          if (
-            mutation.type === "childList" ||
-            mutation.type === "characterData"
-          ) {
-            this.handleContentChange(mutation.target);
-          }
-        });
-      });
-
-      observer.observe(document.body, {
+    if (window.MutationObserver) {
+      new MutationObserver((muts) =>
+        muts.forEach(
+          (m) =>
+            this.isTextInput(m.target) && this.handleInput({ target: m.target })
+        )
+      ).observe(document.body, {
         childList: true,
         subtree: true,
         characterData: true,
@@ -106,356 +31,259 @@ class PrivacyGuard {
     }
   }
 
-  handleInput(event) {
-    console.log("Privacy Guard: Input event detected");
-    const target = event.target;
-    console.log(
-      "Privacy Guard: Target element:",
-      target.tagName,
-      target.className
+  isTextInput(el) {
+    if (!el || typeof el !== 'object' || !(el instanceof HTMLElement))
+      return false;
+
+    return (
+      (el.tagName === 'INPUT' &&
+        ['text', 'email', 'password', 'search', 'url'].includes(el.type)) ||
+      el.tagName === 'TEXTAREA' ||
+      el.isContentEditable ||
+      el.getAttribute('role') === 'textbox'
     );
+  }
 
-    if (this.isTextInput(target)) {
-      console.log("Privacy Guard: Valid text input detected");
-      this.activeInput = target;
-      const text = target.value || target.textContent || target.innerText || "";
-      console.log("Privacy Guard: Text content:", text.substring(0, 100));
-      this.analyzeText(text, target);
-    } else {
-      console.log("Privacy Guard: Not a valid text input");
+  handleInput({ target }) {
+    if (!this.isTextInput(target)) return;
+    const text = target.value ?? target.textContent ?? '';
+    if (!text.trim()) return;
+    this.detectPII(text, target);
+  }
+
+  handleClick(e) {
+    if (this.overlay && !this.overlay.contains(e.target)) this.hideOverlay();
+  }
+
+  handleKeyUp(e) {
+    if (e.key === 'Escape') this.hideOverlay();
+  }
+
+  async detectPII(text, element) {
+    try {
+      const resp = await fetch(this.backendUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text }),
+      });
+      const json = await resp.json();
+      console.log('Response from Flask:', json);
+
+      const entities = json.entities || [];
+      if (entities.length) this.showOverlay(element, entities[0]);
+    } catch (err) {
+      console.error('PrivacyGuard: detectPII error', err);
     }
   }
 
-  handleKeyUp(event) {
-    if (event.key === "Escape") {
-      this.hideOverlay();
-    }
-  }
-
-  handleClick(event) {
-    if (!this.overlay || !this.overlay.contains(event.target)) {
-      this.hideOverlay();
-    }
-  }
-
-  handlePaste(event) {
-    setTimeout(() => {
-      const target = event.target;
-      if (this.isTextInput(target)) {
-        this.activeInput = target;
-        const text = target.value || target.textContent || target.innerText;
-        this.analyzeText(text, target);
-      }
-    }, 100); // Small delay to allow paste to complete
-  }
-
-  handleDOMChange(event) {
-    const target = event.target;
-    if (this.isTextInput(target)) {
-      this.activeInput = target;
-      const text = target.value || target.textContent || target.innerText;
-      if (text && text.length > 0) {
-        this.analyzeText(text, target);
-      }
-    }
-  }
-
-  handleContentChange(element) {
-    if (this.isTextInput(element)) {
-      this.activeInput = element;
-      const text = element.value || element.textContent || element.innerText;
-      if (text && text.length > 0) {
-        this.analyzeText(text, element);
-      }
-    }
-  }
-
-  isTextInput(element) {
-    if (!element) return false;
-
-    // Standard input elements
-    if (
-      element.tagName === "INPUT" &&
-      ["text", "email", "password", "search", "url"].includes(element.type)
-    ) {
-      return true;
-    }
-
-    // Textarea elements
-    if (element.tagName === "TEXTAREA") {
-      return true;
-    }
-
-    // Content editable elements
-    if (element.isContentEditable || element.contentEditable === "true") {
-      return true;
-    }
-
-    // Google Docs specific elements
-    if (
-      element.classList &&
-      (element.classList.contains("kix-lineview-text-block") ||
-        element.classList.contains("docs-text-block") ||
-        element.classList.contains("kix-wordhtmlgenerator-word-node"))
-    ) {
-      return true;
-    }
-
-    // ChatGPT specific elements
-    if (
-      element.classList &&
-      (element.classList.contains("ProseMirror") ||
-        element.classList.contains("chat-input"))
-    ) {
-      return true;
-    }
-
-    // Any element with role="textbox"
-    if (element.getAttribute && element.getAttribute("role") === "textbox") {
-      return true;
-    }
-
-    return false;
-  }
-
-  analyzeText(text, inputElement) {
-    console.log(
-      "Privacy Guard: Analyzing text:",
-      text.substring(0, 100) + "..."
-    );
-
-    if (!this.settings.protectionEnabled) {
-      console.log("Privacy Guard: Protection disabled");
-      return;
-    }
-
-    const words = text.split(/\s+/);
-    const sensitiveWords = [];
-
-    words.forEach((word, index) => {
-      if (this.isSensitiveToken(word)) {
-        console.log("Privacy Guard: Found sensitive word:", word);
-        const position = this.getWordPosition(text, word, index);
-        sensitiveWords.push({
-          word,
-          index,
-          position,
-          element: inputElement,
-        });
-      }
-    });
-
-    if (sensitiveWords.length > 0) {
-      console.log(
-        "Privacy Guard: Processing",
-        sensitiveWords.length,
-        "sensitive words"
-      );
-      this.updateStats("detected", this.stats.detected + 1);
-
-      if (this.settings.autoReplace) {
-        this.autoReplaceWord(sensitiveWords[0]);
-      } else {
-        this.showPrivacyAlert(sensitiveWords[0]);
-      }
-    } else {
-      console.log("Privacy Guard: No sensitive words found");
-    }
-  }
-
-  isSensitiveToken(word) {
-    return this.sensitivePatterns.some((pattern) => pattern.test(word));
-  }
-
-  getWordPosition(text, word, wordIndex) {
-    const words = text.split(/\s+/);
-    let position = 0;
-    for (let i = 0; i < wordIndex; i++) {
-      position += words[i].length + 1; // +1 for space
-    }
-    return position;
-  }
-
-  showPrivacyAlert(sensitiveWord) {
+  showOverlay(element, entity) {
     this.hideOverlay();
-
-    const rect = sensitiveWord.element.getBoundingClientRect();
-    this.overlay = this.createOverlay(rect, sensitiveWord);
+    const rect = element.getBoundingClientRect();
+    this.overlay = this.createOverlay(rect, entity, element);
+    console.log('Received entity from backend:', entity);
     document.body.appendChild(this.overlay);
   }
 
-  createOverlay(rect, sensitiveWord) {
-    const overlay = document.createElement("div");
-    overlay.className = "privacy-guard-overlay";
-    overlay.style.cssText = `
-      position: fixed;
-      top: ${rect.bottom + 5}px;
-      left: ${rect.left}px;
-      background: #fff;
-      border: 2px solid #ff4444;
-      border-radius: 8px;
-      padding: 12px;
-      box-shadow: 0 4px 12px rgba(0,0,0,0.3);
-      z-index: 10000;
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif;
-      font-size: 14px;
-      max-width: 300px;
-    `;
-
-    const title = document.createElement("div");
-    title.textContent = "🔒 Sensitive Data Detected";
-    title.style.cssText =
-      "font-weight: bold; color: #ff4444; margin-bottom: 8px;";
-
-    const message = document.createElement("div");
-    message.textContent = `Found: "${sensitiveWord.word}"`;
-    message.style.cssText = "margin-bottom: 12px; color: #666;";
-
-    const buttons = document.createElement("div");
-    buttons.style.cssText = "display: flex; gap: 8px; flex-wrap: wrap;";
-
-    const eraseBtn = this.createButton("Erase", "#ff4444", () => {
-      this.eraseWord(sensitiveWord);
-      this.hideOverlay();
-    });
-
-    const censorBtn = this.createButton("Censor", "#ff8800", () => {
-      this.censorWord(sensitiveWord);
-      this.hideOverlay();
-    });
-
-    const replaceBtn = this.createButton("Replace", "#4444ff", () => {
-      this.replaceWord(sensitiveWord);
-      this.hideOverlay();
-    });
-
-    buttons.appendChild(eraseBtn);
-    buttons.appendChild(censorBtn);
-    buttons.appendChild(replaceBtn);
-
-    overlay.appendChild(title);
-    overlay.appendChild(message);
-    overlay.appendChild(buttons);
-
+  createOverlay(rect, entity, element) {
+    const overlay = document.createElement('div');
+    overlay.className = 'privacy-guard-overlay';
+    
+    // Store reference for cleanup
+    this.currentElement = element;
+    this.currentEntity = entity;
+    
+    // Apply styles for proper visibility
+    this.applyOverlayStyles(overlay, rect);
+    
+    // Create content using safe DOM methods
+    this.createOverlayContent(overlay, entity);
+    
+    // Add event listeners
+    this.attachOverlayListeners(overlay);
+    
     return overlay;
   }
 
-  createButton(text, color, onClick) {
-    const button = document.createElement("button");
-    button.textContent = text;
-    button.style.cssText = `
-      background: ${color};
-      color: white;
-      border: none;
-      padding: 6px 12px;
-      border-radius: 4px;
-      cursor: pointer;
-      font-size: 12px;
-      transition: opacity 0.2s;
-    `;
-    button.addEventListener("click", onClick);
-    button.addEventListener("mouseenter", () => (button.style.opacity = "0.8"));
-    button.addEventListener("mouseleave", () => (button.style.opacity = "1"));
-    return button;
+  applyOverlayStyles(overlay, rect) {
+    // Calculate position with viewport bounds checking
+    const viewportWidth = window.innerWidth;
+    const viewportHeight = window.innerHeight;
+    const overlayWidth = 280;
+    const overlayHeight = 120;
+    
+    let left = rect.left;
+    let top = rect.bottom + 8;
+    
+    // Adjust horizontal position if overlay would go off-screen
+    if (left + overlayWidth > viewportWidth) {
+      left = viewportWidth - overlayWidth - 10;
+    }
+    if (left < 10) left = 10;
+    
+    // Adjust vertical position if overlay would go off-screen
+    if (top + overlayHeight > viewportHeight) {
+      top = rect.top - overlayHeight - 8;
+    }
+    
+    Object.assign(overlay.style, {
+      position: 'fixed',
+      top: `${Math.max(10, top)}px`,
+      left: `${left}px`,
+      width: `${overlayWidth}px`,
+      minHeight: '80px',
+      background: '#ffffff',
+      border: '2px solid #e74c3c',
+      borderRadius: '8px',
+      padding: '12px',
+      boxShadow: '0 4px 12px rgba(0,0,0,0.15), 0 2px 4px rgba(0,0,0,0.1)',
+      zIndex: '2147483647',
+      fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+      fontSize: '14px',
+      lineHeight: '1.4',
+      color: '#333',
+      boxSizing: 'border-box'
+    });
   }
 
-  eraseWord(sensitiveWord) {
-    const element = sensitiveWord.element;
-    const text = element.value || element.textContent;
-    const words = text.split(/\s+/);
-    words[sensitiveWord.index] = "";
-    const newText = words.join(" ").replace(/\s+/g, " ").trim();
-    this.updateElementText(element, newText);
-    this.updateStats("protected", this.stats.protected + 1);
+  createOverlayContent(overlay, entity) {
+    // Safely escape text content
+    const safeText = this.escapeHtml(entity?.text || 'Unknown PII');
+    const safeSuggestion = this.escapeHtml(entity?.suggestion || '[REDACTED]');
+    const entityType = this.escapeHtml(entity?.type || 'UNKNOWN');
+    
+    // Create header
+    const header = document.createElement('div');
+    header.style.cssText = 'font-weight: bold; color: #e74c3c; margin-bottom: 8px; font-size: 12px;';
+    header.textContent = `🔒 ${entityType} DETECTED`;
+    
+    // Create detected text section
+    const detectedSection = document.createElement('div');
+    detectedSection.style.cssText = 'margin-bottom: 6px;';
+    
+    const detectedLabel = document.createElement('strong');
+    detectedLabel.textContent = 'Found: ';
+    detectedLabel.style.color = '#666';
+    
+    const detectedText = document.createElement('span');
+    detectedText.textContent = safeText;
+    detectedText.style.cssText = 'background: #fff3cd; padding: 2px 4px; border-radius: 3px; font-family: monospace;';
+    
+    detectedSection.appendChild(detectedLabel);
+    detectedSection.appendChild(detectedText);
+    
+    // Create suggestion section
+    const suggestionSection = document.createElement('div');
+    suggestionSection.style.cssText = 'margin-bottom: 12px;';
+    
+    const suggestionLabel = document.createElement('em');
+    suggestionLabel.textContent = 'Replace with: ';
+    suggestionLabel.style.color = '#666';
+    
+    const suggestionText = document.createElement('span');
+    suggestionText.textContent = safeSuggestion;
+    suggestionText.style.cssText = 'background: #d1ecf1; padding: 2px 4px; border-radius: 3px; font-family: monospace;';
+    
+    suggestionSection.appendChild(suggestionLabel);
+    suggestionSection.appendChild(suggestionText);
+    
+    // Create buttons container
+    const buttonContainer = document.createElement('div');
+    buttonContainer.style.cssText = 'display: flex; gap: 8px; justify-content: flex-end;';
+    
+    // Accept button
+    const acceptBtn = document.createElement('button');
+    acceptBtn.textContent = 'Replace';
+    acceptBtn.style.cssText = 'background: #28a745; color: white; border: none; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 500;';
+    acceptBtn.setAttribute('data-action', 'accept');
+    
+    // Ignore button
+    const ignoreBtn = document.createElement('button');
+    ignoreBtn.textContent = 'Ignore';
+    ignoreBtn.style.cssText = 'background: #6c757d; color: white; border: none; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 500;';
+    ignoreBtn.setAttribute('data-action', 'ignore');
+    
+    buttonContainer.appendChild(ignoreBtn);
+    buttonContainer.appendChild(acceptBtn);
+    
+    // Assemble overlay
+    overlay.appendChild(header);
+    overlay.appendChild(detectedSection);
+    overlay.appendChild(suggestionSection);
+    overlay.appendChild(buttonContainer);
   }
 
-  censorWord(sensitiveWord) {
-    const element = sensitiveWord.element;
-    const text = element.value || element.textContent;
-    const words = text.split(/\s+/);
-    words[sensitiveWord.index] = "*".repeat(sensitiveWord.word.length);
-    const newText = words.join(" ");
-    this.updateElementText(element, newText);
-    this.updateStats("censored", this.stats.censored + 1);
-    this.updateStats("protected", this.stats.protected + 1);
-  }
-
-  replaceWord(sensitiveWord) {
-    const element = sensitiveWord.element;
-    const text = element.value || element.textContent;
-    const words = text.split(/\s+/);
-    const replacement = this.getDifferentialPrivacyReplacement(
-      sensitiveWord.word,
-      text
+  attachOverlayListeners(overlay) {
+    // Store event listeners for cleanup
+    this.overlayListeners = [];
+    
+    const handleClick = (e) => {
+      const action = e.target.getAttribute('data-action');
+      if (action === 'accept') {
+        this.replaceEntityInElement(this.currentElement, this.currentEntity);
+        this.hideOverlay();
+      } else if (action === 'ignore') {
+        this.hideOverlay();
+      }
+    };
+    
+    const handleMouseOver = (e) => {
+      if (e.target.tagName === 'BUTTON') {
+        e.target.style.opacity = '0.8';
+      }
+    };
+    
+    const handleMouseOut = (e) => {
+      if (e.target.tagName === 'BUTTON') {
+        e.target.style.opacity = '1';
+      }
+    };
+    
+    overlay.addEventListener('click', handleClick);
+    overlay.addEventListener('mouseover', handleMouseOver);
+    overlay.addEventListener('mouseout', handleMouseOut);
+    
+    // Store for cleanup
+    this.overlayListeners.push(
+      { element: overlay, type: 'click', handler: handleClick },
+      { element: overlay, type: 'mouseover', handler: handleMouseOver },
+      { element: overlay, type: 'mouseout', handler: handleMouseOut }
     );
-    words[sensitiveWord.index] = replacement;
-    const newText = words.join(" ");
-    this.updateElementText(element, newText);
-    this.updateStats("replaced", this.stats.replaced + 1);
-    this.updateStats("protected", this.stats.protected + 1);
   }
 
-  autoReplaceWord(sensitiveWord) {
-    const element = sensitiveWord.element;
-    const text = element.value || element.textContent;
-    const words = text.split(/\s+/);
-    const replacement = this.getDifferentialPrivacyReplacement(
-      sensitiveWord.word,
-      text
-    );
-    words[sensitiveWord.index] = replacement;
-    const newText = words.join(" ");
-    this.updateElementText(element, newText);
-    this.updateStats("replaced", this.stats.replaced + 1);
-    this.updateStats("protected", this.stats.protected + 1);
+  escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
   }
 
-  updateElementText(element, newText) {
-    if (element.tagName === "INPUT" || element.tagName === "TEXTAREA") {
-      element.value = newText;
+  replaceEntityInElement(el, entity) {
+    const text = el.value ?? el.textContent ?? '';
+    if (el.value !== undefined) {
+      el.value = text.replace(entity.text, entity.suggestion);
     } else {
-      element.textContent = newText;
+      el.textContent = text.replace(entity.text, entity.suggestion);
     }
-    element.dispatchEvent(new Event("input", { bubbles: true }));
-  }
-
-  getDifferentialPrivacyReplacement(word, context) {
-    if (!this.differentialPrivacyManager) {
-      return "*".repeat(word.length);
-    }
-
-    try {
-      return this.differentialPrivacyManager.getPrivateReplacement(
-        word,
-        context
-      );
-    } catch (error) {
-      console.error("Error getting differential privacy replacement:", error);
-      return "*".repeat(word.length);
-    }
-  }
-
-  updateStats(type, value) {
-    this.stats[type] = value;
-
-    // Send stats to background script
-    chrome.runtime
-      .sendMessage({
-        type: "STATS_UPDATE",
-        stats: this.stats,
-      })
-      .catch((error) => {
-        console.error("Error updating stats:", error);
-      });
+    el.dispatchEvent(new Event('input', { bubbles: true }));
   }
 
   hideOverlay() {
     if (this.overlay) {
+      // Clean up event listeners
+      if (this.overlayListeners) {
+        this.overlayListeners.forEach(({ element, type, handler }) => {
+          element.removeEventListener(type, handler);
+        });
+        this.overlayListeners = [];
+      }
+      
+      // Remove overlay from DOM
       this.overlay.remove();
       this.overlay = null;
+      this.currentElement = null;
+      this.currentEntity = null;
     }
   }
 }
 
 // Initialize the privacy guard
-const privacyGuard = new PrivacyGuard();
+new PrivacyGuard();

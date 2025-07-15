@@ -4,6 +4,18 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 
+# Python
+venv/
+env/
+ENV/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+pip-log.txt
+pip-delete-this-directory.txt
+
 # Build outputs
 dist/
 build/
