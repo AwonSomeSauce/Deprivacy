@@ -2,6 +2,8 @@ class PrivacyGuard {
   constructor() {
     this.overlay = null;
     this.backendUrl = 'http://127.0.0.1:5000/detect-pii';
+    this.debounceTimer = null;
+    this.lastProcessedText = new WeakMap();
     this.init();
   }
 
@@ -16,19 +18,6 @@ class PrivacyGuard {
     );
     document.addEventListener('click', (e) => this.handleClick(e));
     document.addEventListener('keyup', (e) => this.handleKeyUp(e));
-
-    if (window.MutationObserver) {
-      new MutationObserver((muts) =>
-        muts.forEach(
-          (m) =>
-            this.isTextInput(m.target) && this.handleInput({ target: m.target })
-        )
-      ).observe(document.body, {
-        childList: true,
-        subtree: true,
-        characterData: true,
-      });
-    }
   }
 
   isTextInput(el) {
@@ -48,7 +37,15 @@ class PrivacyGuard {
     if (!this.isTextInput(target)) return;
     const text = target.value ?? target.textContent ?? '';
     if (!text.trim()) return;
-    this.detectPII(text, target);
+    
+    // Debounce and avoid duplicate processing
+    if (this.lastProcessedText.get(target) === text) return;
+    
+    clearTimeout(this.debounceTimer);
+    this.debounceTimer = setTimeout(() => {
+      this.lastProcessedText.set(target, text);
+      this.detectPII(text, target);
+    }, 300);
   }
 
   handleClick(e) {
