@@ -7,7 +7,8 @@ CORS(app)  # Enable CORS for all routes
 
 @app.route('/detect-pii', methods=['POST'])
 def detect_pii():
-  data = request.json.get('text', '')
+  data = request.get_json().get('text', '')
+  print("Found data: ", data)
 
   # 🔧 Dummy response for now
   response = {
