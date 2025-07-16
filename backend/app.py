@@ -1,26 +1,38 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
+from presidio_analyzer import AnalyzerEngine
 
 app = Flask(__name__)
-CORS(app)  # Enable CORS for all routes
+CORS(app, resources={r"/*": {"origins": "*"}})  # Enable CORS for all routes
+
+# Initialize the Presidio analyzer
+analyzer = AnalyzerEngine()
 
 
 @app.route('/detect-pii', methods=['POST'])
 def detect_pii():
+  # Extract text from incoming JSON
   data = request.get_json().get('text', '')
-  print("Found data: ", data)
+  print(f"Received text for PII detection: {data}")
 
-  # 🔧 Dummy response for now
-  response = {
-      "entities": [
-          {"text": "John Doe", "start": 5, "end": 13,
-           "type": "PERSON", "suggestion": "[REDACTED]"},
-          {"text": "123-456-7890", "start": 25, "end": 37,
-              "type": "PHONE_NUMBER", "suggestion": "[PHONE]"}
-      ]
-  }
-  return jsonify(response)
+  # Analyze the text for PII entities
+  analysis_results = analyzer.analyze(text=data, language='en')
+
+  # Build response entities list
+  entities = []
+  for result in analysis_results:
+    entity_text = data[result.start:result.end]
+    entities.append({
+        "text": entity_text,
+        "start": result.start,
+        "end": result.end,
+        "type": result.entity_type,
+        "suggestion": ""
+    })
+
+  return jsonify({"entities": entities})
 
 
 if __name__ == '__main__':
+  # Run Flask development server
   app.run(port=5000, debug=True)
