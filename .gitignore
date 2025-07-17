@@ -50,3 +50,6 @@ Thumbs.db
 *.crx
 *.pem
 *.zip
+
+# Embeddings
+backend/embeddings/
