@@ -1,67 +1,23 @@
 import sys
-import re
 import numpy as np
 from scipy.spatial.distance import cdist
 from rapidfuzz import fuzz
 
-def is_clean_word(word):
-    """Check if word is clean, canonical English word suitable for PII detection"""
-    # Only lowercase letters, numbers, and hyphens allowed
-    if not re.match(r'^[a-z0-9-]+$', word):
-        return False
-    
-    # Filter out very short words (1 character)
-    if len(word) < 2:
-        return False
-    
-    # Filter out words that are just numbers or hyphens
-    if word.isdigit() or word == '-' or word.startswith('-') or word.endswith('-'):
-        return False
-    
-    # Filter out words with consecutive hyphens
-    if '--' in word:
-        return False
-    
-    return True
 
-def load_and_filter_embeddings(vec_file_path):
-    """Load embeddings and filter for clean, canonical English words"""
+def load_embeddings(vec_file_path):
+    """Load pre-cleaned embeddings from processed .vec file"""
     embeddings = {}
-    seen_words = set()
-    filtered_count = 0
-    total_count = 0
     
-    print("Loading and filtering embeddings...")
+    print("Loading pre-cleaned embeddings...")
     with open(vec_file_path, 'r', encoding='utf-8') as f:
         next(f)  # Skip first line (contains vocab size and dimensions)
         for line in f:
-            total_count += 1
-            if total_count % 100000 == 0:
-                print(f"Processed {total_count} words, kept {len(embeddings)} clean words")
-            
             parts = line.strip().split()
             word = parts[0]
-            
-            # Convert to lowercase for deduplication
-            word_lower = word.lower()
-            
-            # Skip if we've already seen this word (case-insensitive)
-            if word_lower in seen_words:
-                continue
-            
-            # Check if word is clean and canonical
-            if is_clean_word(word_lower):
-                vector = np.array([float(x) for x in parts[1:]])
-                embeddings[word_lower] = vector
-                seen_words.add(word_lower)
-            else:
-                filtered_count += 1
+            vector = np.array([float(x) for x in parts[1:]])
+            embeddings[word] = vector
     
-    print(f"Filtering complete:")
-    print(f"  Total words processed: {total_count}")
-    print(f"  Clean words kept: {len(embeddings)}")
-    print(f"  Words filtered out: {filtered_count}")
-    
+    print(f"Loaded {len(embeddings)} clean words")
     return embeddings
 
 def is_clean_suggestion(candidate, query, similarity_threshold=90):
@@ -112,10 +68,10 @@ if __name__ == "__main__":
         sys.exit(1)
     
     target_word = sys.argv[1].lower()
-    vec_file_path = "embeddings/crawl-300d-2M.vec"
+    vec_file_path = "embeddings/cleaned_crawl-300d-2M.vec"
     
     print(f"Loading embeddings from {vec_file_path}...")
-    embeddings = load_and_filter_embeddings(vec_file_path)
+    embeddings = load_embeddings(vec_file_path)
     
     print(f"\nFinding 20 closest words to '{target_word}'...")
     result = find_closest_words(target_word, embeddings, 20)
